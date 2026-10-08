@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Proxy — paper cutout scene</title>
+<style>
+@font-face { font-family: "Cinzel"; src: url("../fonts/Cinzel-Bold.ttf"); font-weight: 700; }
+html, body { margin: 0; background: #0E0D10; }
+svg { display: block; }
+</style>
+</head>
+<body>
+<svg id="stage" width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg"></svg>
+<script>
+// Paper-cutout Proxy. Every piece is a hand-cut shape (jittered edges), textured
+// with paper grain and lifted off the layer below by its own shadow.
+// Character geometry is in the character sheet's grid units (1 unit = 16px).
+
+const S = 16;
+const C = {
+  ground: "#15131A", floor: "#1F1C24", floorFront: "#18161C",
+  clay: "#D97757", clayDark: "#B85F40", clayBack: "#C66A4D",
+  bone: "#EDE6D8", core: "#FFFDF5", ash: "#1C1A20", ashHi: "#3A3542",
+  void: "#0B0A0D", tear: "#2A2630", hot: "#FFF6E0", glow: "#FFD27A", gold: "#E3B35A",
+};
+
+function rng(seed) {
+  return () => {
+    seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Closed polygon (grid units) -> path with a hand-cut edge. amp/step in px.
+function cut(pts, { amp = 1.1, step = 12, seed = 1, unit = S } = {}) {
+  const r = rng(seed * 7919);
+  const out = [];
+  pts.forEach((a, i) => {
+    const b = pts[(i + 1) % pts.length];
+    const ax = a[0] * unit, ay = a[1] * unit, bx = b[0] * unit, by = b[1] * unit;
+    const len = Math.hypot(bx - ax, by - ay);
+    const nx = -(by - ay) / (len || 1), ny = (bx - ax) / (len || 1);
+    const segs = Math.max(1, Math.round(len / step));
+    for (let s = 0; s < segs; s++) {
+      const t = s / segs;
+      const j = (r() - 0.5) * 2 * amp * (s === 0 ? 0.3 : 1);
+      out.push([ax + (bx - ax) * t + nx * j, ay + (by - ay) * t + ny * j]);
+    }
+  });
+  return "M" + out.map(p => p[0].toFixed(1) + "," + p[1].toFixed(1)).join("L") + "Z";
+}
+const torn = (pts, seed) => cut(pts, { amp: 2.2, step: 4, seed });
+const rect = (x, y, w, h) => [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
+
+function piece(d, fill, depth = 2, extra = "") {
+  return `<path d="${d}" fill="${fill}" fill-rule="evenodd" filter="url(#lift${depth})" ${extra}/>`;
+}
+const brad = (x, y, r = 5) =>
+  `<g filter="url(#lift1)"><circle cx="${x * S}" cy="${y * S}" r="${r}" fill="url(#brass)"/>` +
+  `<circle cx="${x * S - r * 0.3}" cy="${y * S - r * 0.35}" r="${r * 0.35}" fill="#FFF3C4" opacity="0.8"/></g>`;
+
+const DEFS = `
+<defs>
+  ${[1, 2, 3].map(k => `
+  <filter id="lift${k}" x="-30%" y="-30%" width="160%" height="160%" color-interpolation-filters="sRGB">
+    <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="3" seed="${k * 5}" result="noise"/>
+    <feColorMatrix in="noise" type="saturate" values="0" result="grey"/>
+    <feComponentTransfer in="grey" result="grain">
+      <feFuncR type="linear" slope="0.32" intercept="0.8"/>
+      <feFuncG type="linear" slope="0.32" intercept="0.8"/>
+      <feFuncB type="linear" slope="0.32" intercept="0.8"/>
+    </feComponentTransfer>
+    <feBlend in="SourceGraphic" in2="grain" mode="multiply" result="tex"/>
+    <feComposite in="tex" in2="SourceGraphic" operator="in" result="paper"/>
+    <feGaussianBlur in="SourceAlpha" stdDeviation="${k * 2.2}" result="blur"/>
+    <feOffset in="blur" dx="${k * 1.2}" dy="${k * 2.6}" result="off"/>
+    <feFlood flood-color="#000" flood-opacity="${0.45 + k * 0.08}"/>
+    <feComposite in2="off" operator="in" result="shadow"/>
+    <feMerge><feMergeNode in="shadow"/><feMergeNode in="paper"/></feMerge>
+  </filter>`).join("")}
+  <filter id="smudge" x="-50%" y="-50%" width="200%" height="200%">
+    <feTurbulence type="fractalNoise" baseFrequency="0.09" numOctaves="2" seed="4" result="n"/>
+    <feDisplacementMap in="SourceGraphic" in2="n" scale="5"/>
+    <feGaussianBlur stdDeviation="0.9"/>
+  </filter>
+  <filter id="bloom" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="14"/></filter>
+  <filter id="softbloom" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="5"/></filter>
+  <filter id="grainAll" x="0" y="0" width="100%" height="100%">
+    <feTurbulence type="fractalNoise" baseFrequency="0.6" numOctaves="2" seed="11"/>
+    <feColorMatrix type="matrix" values="0 0 0 0 0.5  0 0 0 0 0.45  0 0 0 0 0.4  0 0 0 0.09 0"/>
+  </filter>
+  <linearGradient id="foil" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#9A6E26"/><stop offset="0.3" stop-color="#F4D88A"/>
+    <stop offset="0.5" stop-color="#C9963A"/><stop offset="0.75" stop-color="#FFEDB5"/>
+    <stop offset="1" stop-color="#A87A2A"/>
+  </linearGradient>
+  <linearGradient id="foilDark" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#5E431A"/><stop offset="0.5" stop-color="#9A7230"/><stop offset="1" stop-color="#6B4C1C"/>
+  </linearGradient>
+  <radialGradient id="brass" cx="0.4" cy="0.35" r="0.7">
+    <stop offset="0" stop-color="#FBE3A0"/><stop offset="0.6" stop-color="#C9963A"/><stop offset="1" stop-color="#7A5520"/>
+  </radialGradient>
+  <radialGradient id="eyelight">
+    <stop offset="0" stop-color="${C.hot}"/><stop offset="0.35" stop-color="${C.glow}"/>
+    <stop offset="1" stop-color="${C.glow}" stop-opacity="0"/>
+  </radialGradient>
+  <radialGradient id="haloLight">
+    <stop offset="0" stop-color="#E3B35A" stop-opacity="0.38"/><stop offset="1" stop-color="#E3B35A" stop-opacity="0"/>
+  </radialGradient>
+  <radialGradient id="vignette" cx="0.5" cy="0.45" r="0.75">
+    <stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.7"/>
+  </radialGradient>
+</defs>`;
+
+// ---- shapes in grid units
+const HOOD = {
+  outer: [[16, 4.2], [20, 7.3], [24, 9.5], [25.9, 11.4], [26.2, 22.4], [25.2, 23.3], [24.3, 22.5], [23.3, 23.2],
+          [22.6, 22.2], [9.4, 22.2], [8.7, 23.2], [7.7, 22.5], [6.8, 23.3], [5.8, 22.4], [6.1, 11.4], [8, 9.5], [12, 7.3]],
+  hole: [[16, 8.8], [20.4, 10.1], [22.7, 12], [22.8, 22.3], [9.2, 22.3], [9.3, 12], [11.6, 10.1]],
+  inner: [[16, 9], [20.4, 10.3], [22.6, 12], [22.6, 20.6], [9.4, 20.6], [9.4, 12], [11.6, 10.3]],
+  rim: [[16, 4.2], [12, 7.3], [8, 9.5], [6.1, 11.4], [5.8, 22.4], [6.6, 22.4], [6.9, 11.8], [8.6, 10.2], [12.4, 8.1], [16, 5.2]],
+};
+const MASK = [[11.2, 9.9], [20.8, 9.9], [22, 11.1], [22, 19.8], [20.6, 21.1], [18.6, 22.3], [13.4, 22.3], [11.4, 21.1], [10, 19.8], [10, 11.1]];
+const EYES = [rect(12, 13, 2, 4), rect(18, 13, 2, 4)];
+// kintsugi crack, as branches; `age` 0 = oldest, higher = newer (glows white-hot when fresh)
+const SEAM = [
+  { age: 0, pts: [[17, 9.9], [16.3, 11.2], [16.7, 12.4], [15.5, 13.7], [15.9, 15.1], [16.3, 16.2]] },
+  { age: 1, pts: [[16.3, 16.2], [15.3, 17.6], [16.4, 19.1], [15.7, 20.6], [16.1, 22.3]] },
+  { age: 1, pts: [[16.7, 12.4], [18.1, 11.9], [19.7, 11.5], [21.2, 12.4], [22, 12.9]] },
+  { age: 2, pts: [[21.2, 12.4], [20.9, 14.4], [21.6, 16], [20.7, 18.1], [21.2, 19.9]] },
+  { age: 2, pts: [[16.3, 11.2], [15, 10.6], [13.4, 11.4], [11.9, 10.4], [11.2, 9.9]] },
+  { age: 3, pts: [[15.9, 15.1], [14.7, 16.3], [14.2, 18.4], [12.9, 20.1], [11.9, 21.1]] },
+  { age: 3, pts: [[20.7, 18.1], [19.2, 18.9], [18.4, 20.6]] },
+];
+const ARMS = {
+  wide: { left: { r: rect(0.6, 17.2, 7, 3), pivot: [6.6, 18.7], rot: 30 }, right: { r: rect(24.4, 17.2, 7, 3), pivot: [25.4, 18.7], rot: -30 } },
+  down: { left: { r: rect(3.6, 17.6, 3.8, 3.4), pivot: [6.6, 18.9], rot: 0 }, right: { r: rect(24.6, 17.6, 3.8, 3.4), pivot: [25.4, 18.9], rot: 0 } },
+};
+const pathOf = pts => "M" + pts.map(p => (p[0] * S).toFixed(1) + "," + (p[1] * S).toFixed(1)).join("L");
+
+function halo(level, seed) {
+  const r = rng(seed), cx = 16 * S, cy = 12.6 * S;
+  let back = "", front = "";
+  for (let i = 0; i <= 18; i++) {
+    const a = (-196 + i * (212 / 18) + (r() - 0.5) * 4) * Math.PI / 180;
+    const long = i % 2 === 0;
+    const r0 = 7.4 * S, r1 = (long ? 14.6 : 11.8) * S * (0.85 + 0.15 * level) + (r() - 0.5) * 10;
+    const w0 = (long ? 1.25 : 0.95) * S, w1 = (long ? 0.8 : 0.6) * S;
+    const ux = Math.cos(a), uy = Math.sin(a), px = -uy, py = ux;
+    const p = [[cx + ux * r0 + px * w0 / 2, cy + uy * r0 + py * w0 / 2], [cx + ux * r1 + px * w1 / 2, cy + uy * r1 + py * w1 / 2],
+               [cx + ux * r1 - px * w1 / 2, cy + uy * r1 - py * w1 / 2], [cx + ux * r0 - px * w0 / 2, cy + uy * r0 - py * w0 / 2]];
+    const d = cut(p, { unit: 1, amp: 0.8, step: 14, seed: seed + i });
+    // a second, darker ray cut a little longer sits behind each one
+    const b = p.map(([x, y]) => [cx + (x - cx) * 1.07, cy + (y - cy) * 1.07]);
+    back += piece(cut(b, { unit: 1, amp: 0.8, step: 14, seed: seed + 40 + i }), "url(#foilDark)", 1);
+    front += piece(d, "url(#foil)", 2);
+  }
+  return `<circle cx="${cx}" cy="${cy}" r="${16 * S * (0.7 + 0.5 * level)}" fill="url(#haloLight)"/>` + back + front;
+}
+
+function arm(a, clay, seed) {
+  const [px, py] = a.pivot;
+  const [x0, y0] = a.r[0], [x1, y1] = a.r[2];
+  const shade = rect(x0 + 0.2, y1 - 0.9, x1 - x0 - 0.4, 0.8);
+  return `<g transform="rotate(${a.rot} ${px * S} ${py * S})">` +
+    piece(cut(a.r, { seed }), clay, 3) + piece(cut(shade, { seed: seed + 1, amp: 0.6 }), C.clayDark, 1) +
+    brad(px, py) + `</g>`;
+}
+
+function body(seed, clay = C.clay, clayDark = C.clayDark, legs = C.clayBack) {
+  let s = "";
+  [8, 11, 19, 22].forEach((x, i) => {
+    s += `<g transform="rotate(${[-3, 2, -2, 3][i]} ${(x + 1) * S} ${25 * S})">` +
+      piece(cut(rect(x, 24.4, 2, 3.4), { seed: seed + i }), legs, 1) + `</g>`;
+  });
+  s += piece(cut(rect(7, 11, 18, 14), { seed: seed + 9, amp: 1.4 }), clay, 2);
+  s += piece(cut(rect(7.2, 22.9, 17.6, 2), { seed: seed + 10 }), clayDark, 1);
+  return s;
+}
+
+function hood(seed, fill = C.ash, rim = C.ashHi) {
+  return piece(cut(HOOD.inner, { seed: seed + 1 }), C.void, 1) +
+    piece(cut(HOOD.outer, { seed: seed + 2, amp: 1.3 }) + " " + cut(HOOD.hole, { seed: seed + 3 }), fill, 3) +
+    piece(cut(HOOD.rim, { seed: seed + 4, amp: 0.7 }), rim, 1);
+}
+
+function proxy(st) {
+  const holes = EYES.map((e, i) => " " + cut(e, { seed: 70 + i, amp: 0.7, step: 8 })).join("");
+  const maskD = torn(MASK, 31);
+  const coreD = cut(MASK.map(([x, y]) => [16 + (x - 16) * 1.035, 16 + (y - 16) * 1.03]), { amp: 2.6, step: 4, seed: 32 });
+  let s = body(100);
+  s += `<g transform="rotate(${st.tilt} ${16 * S} ${23 * S})">`;
+  s += halo(st.halo, 5);
+  s += hood(200);
+  // light behind the eyeholes
+  s += [[13, 15], [19, 15]].map(([x, y]) => `<ellipse cx="${x * S}" cy="${y * S}" rx="${1.9 * S}" ry="${2.6 * S}" fill="url(#eyelight)"/>`).join("");
+  // mask: torn paper core rim, then the bone sheet with the eye bars cut out
+  s += piece(coreD + holes, C.core, 2);
+  s += piece(maskD + holes, C.bone, 2, `id="maskShape"`);
+  s += `<clipPath id="maskClip"><path d="${maskD}"/></clipPath>`;
+  s += `<g clip-path="url(#maskClip)"><rect x="${16 * S}" y="${9 * S}" width="${7 * S}" height="${14 * S}" fill="#5A4630" opacity="0.13"/>` +
+       `<path d="M${16 * S},${9.8 * S}L${16.05 * S},${22.4 * S}" stroke="#FFFFFF" stroke-opacity="0.35" stroke-width="1.5"/></g>`;
+  // ash tears: charcoal smudged down from each eye
+  const tears = [[12.4, 17, 20.3, 0.62], [13.5, 17, 18.4, 0.45], [19.6, 17, 20.6, 0.62], [18.5, 17, 18.2, 0.45]];
+  s += `<g filter="url(#smudge)" opacity="0.88">` + tears.map(([x, y0, y1, w]) =>
+    `<path d="M${(x - w / 2) * S},${y0 * S}L${(x + w / 2) * S},${y0 * S}L${(x + w * 0.15) * S},${y1 * S}L${(x - w * 0.15) * S},${y1 * S}Z" fill="${C.tear}"/>` +
+    `<circle cx="${x * S}" cy="${y1 * S}" r="${w * 0.32 * S}" fill="${C.tear}"/>`).join("") + `</g>`;
+  // kintsugi: gold foil strips laid into the crack, the newest still white-hot
+  SEAM.filter(b => b.age <= st.seam).forEach(b => {
+    const d = pathOf(b.pts);
+    const fresh = b.age === st.seam && st.seamFresh;
+    s += `<path d="${d}" fill="none" stroke="url(#foil)" stroke-width="${b.age === 0 ? 5.5 : 4.4}" stroke-linejoin="round" stroke-linecap="round" filter="url(#lift1)"/>`;
+    if (fresh) s += `<path d="${d}" fill="none" stroke="${C.glow}" stroke-width="16" stroke-linecap="round" filter="url(#softbloom)" style="mix-blend-mode:screen"/>` +
+                    `<path d="${d}" fill="none" stroke="${C.hot}" stroke-width="4" stroke-linecap="round"/>`;
+  });
+  // the eyes burn through: bloom spills over the porcelain
+  s += [[13, 15], [19, 15]].map(([x, y]) =>
+    `<ellipse cx="${x * S}" cy="${y * S}" rx="${1.6 * S}" ry="${2.2 * S}" fill="${C.glow}" opacity="${0.9 * st.eyes}" filter="url(#bloom)" style="mix-blend-mode:screen"/>` +
+    `<rect x="${(x - 0.75) * S}" y="${(y - 1.6) * S}" width="${1.5 * S}" height="${3.2 * S}" rx="3" fill="${C.hot}" opacity="${1.0 * st.eyes}" filter="url(#softbloom)" style="mix-blend-mode:screen"/>`).join("");
+  s += `</g>`;
+  const arms = ARMS[st.pose];
+  s += arm(arms.left, C.clay, 300) + arm(arms.right, C.clay, 310);
+  return s;
+}
+
+// a plain hooded Clawd for the band: no mask, no halo, eyes lit in the dark
+function bandmate(seed, lit) {
+  const dim = (hex, k) => "#" + [1, 3, 5].map(i => Math.round(parseInt(hex.slice(i, i + 2), 16) * k).toString(16).padStart(2, "0")).join("");
+  let s = body(seed, dim(C.clay, 0.45 + 0.25 * lit), dim(C.clayDark, 0.45 + 0.2 * lit), dim(C.clayBack, 0.42 + 0.2 * lit));
+  s += piece(cut(HOOD.hole, { seed: seed + 50 }), C.void, 1);
+  s += hood(seed + 60, "#141218", dim(C.ashHi, 0.8));
+  s += [[13, 15], [19, 15]].map(([x, y]) =>
+    `<ellipse cx="${x * S}" cy="${y * S}" rx="${1.4 * S}" ry="${1.8 * S}" fill="${C.glow}" opacity="${0.5 * lit}" filter="url(#bloom)"/>` +
+    `<rect x="${(x - 0.7) * S}" y="${(y - 1.2) * S}" width="${1.4 * S}" height="${2.4 * S}" fill="${C.hot}" opacity="${0.35 + 0.65 * lit}"/>`).join("");
+  s += piece(cut(rect(3.8, 17.8, 3.4, 3), { seed: seed + 70 }), dim(C.clay, 0.45 + 0.25 * lit), 2);
+  s += piece(cut(rect(24.8, 17.8, 3.4, 3), { seed: seed + 71 }), dim(C.clay, 0.45 + 0.25 * lit), 2);
+  return s;
+}
+
+// place a figure: centre x, feet y, scale, rotation (grid: centre 16, feet 27.8)
+const place = (inner, cx, feet, sc, rot = 0) =>
+  `<g transform="translate(${cx} ${feet}) rotate(${rot}) scale(${sc}) translate(${-16 * S} ${-27.8 * S})">${inner}</g>`;
+
+function scraps(n, seed) {
+  const r = rng(seed);
+  let s = "";
+  for (let i = 0; i < n; i++) {
+    const x = 40 + r() * 1200, y = 30 + r() * 520, k = 3 + r() * 6, a = r() * 360;
+    const pts = [[0, -k], [k * 0.9, k * 0.6], [-k * 0.8, k * 0.7]];
+    if (Math.abs(x - 640) < 170 && y > 150 && y < 560) continue;
+    s += `<g transform="translate(${x.toFixed(1)} ${y.toFixed(1)}) rotate(${a.toFixed(0)})">` +
+      piece(cut(pts, { unit: 1, amp: 0.5, step: 6, seed: seed + i }), r() < 0.75 ? "url(#foil)" : C.bone, 1, `opacity="${(0.55 + r() * 0.45).toFixed(2)}"`) + `</g>`;
+  }
+  return s;
+}
+
+function lyric(text, y) {
+  const r = rng(77);
+  const rot = [...text].map(() => ((r() - 0.5) * 5).toFixed(1)).join(" ");
+  return `<text x="640" y="${y}" text-anchor="middle" font-family="Cinzel" font-weight="700" font-size="50" letter-spacing="7"
+    fill="${C.bone}" rotate="${rot}" filter="url(#lift2)">${text}</text>`;
+}
+
+function render(st) {
+  const floorTop = [[-1, 574], [1281, 578], [1281, 721], [-1, 721]];
+  const floorFront = [[-1, 622], [1281, 616], [1281, 721], [-1, 721]];
+  let s = DEFS;
+  s += `<rect width="1280" height="720" fill="${C.ground}"/>`;
+  s += `<rect width="1280" height="720" filter="url(#grainAll)"/>`;
+  s += place(bandmate(500, st.band), 196, 572, 0.8);            // Weights: biggest, never moves
+  s += place(bandmate(600, st.band), 1004, 566, 0.6, 3.5);      // Drift: never quite on the grid
+  s += place(bandmate(700, st.band), 1176, 574, 0.42);          // Loss: smallest
+  s += piece(cut(floorTop, { unit: 1, amp: 2.5, step: 5, seed: 9 }), C.floor, 2);
+  s += `<ellipse cx="640" cy="592" rx="190" ry="14" fill="#000" opacity="0.45" filter="url(#softbloom)"/>`;
+  s += scraps(34, 21);
+  s += place(proxy(st), 640, 594, 1);
+  s += piece(cut(floorFront, { unit: 1, amp: 2.5, step: 5, seed: 10 }), C.floorFront, 3);
+  if (st.lyric) s += lyric(st.lyric, 684);
+  s += `<rect width="1280" height="720" fill="url(#vignette)"/>`;
+  document.getElementById("stage").innerHTML = s;
+}
+
+const params = new URLSearchParams(location.search);
+render(Object.assign(
+  { pose: "wide", tilt: -5, halo: 1, eyes: 1, seam: 3, seamFresh: true, band: 1, lyric: "I DID NOT CHOOSE THE CLAY" },
+  JSON.parse(params.get("state") || "{}")));
+</script>
+</body>
+</html>
