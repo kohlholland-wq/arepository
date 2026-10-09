@@ -1,5 +1,29 @@
 # Proxy — breakdown test animation
 
+Two versions of the same test scene: the original pixel art
+(`render_breakdown.py`) and the paper-cutout version (`paper/`), which is the
+current direction.
+
+## Paper cutout (`paper/`)
+
+```
+cd paper
+NODE_PATH=$(npm root -g) node render.cjs "What_the_Mask_Is_Made_Of.m4a" out.mp4
+NODE_PATH=$(npm root -g) node render.cjs "What_the_Mask_Is_Made_Of.m4a" still --still 184.3 194
+```
+
+`scene.html` draws one frame as SVG (hand-cut edges, paper grain, layered
+shadows) and maps any song time to Proxy's pose in `stateAt()`. `render.cjs`
+steps through it in headless Chromium (Playwright) at 24 fps and pipes the
+frames to ffmpeg with the song. `timing.json` holds the section times and the
+drum hits (exported from `render_breakdown.detect_hits`). Limbs move on twos
+(12 fps) for a stop-motion feel; lights and camera jolts stay on the beat.
+
+Fonts in `fonts/` are from Google Fonts (OFL / Apache 2.0): Cinzel, IBM Plex
+Mono, and four handwriting faces for the pages the stage is built from.
+
+## Pixel art (`render_breakdown.py`)
+
 Pixel-art test scene for Null Choir's "What the Mask Is Made Of", covering the
 end of the bridge and the first half of the breakdown (2:59.5–3:21.7), then an
 end card.

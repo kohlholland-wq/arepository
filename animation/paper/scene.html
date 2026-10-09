@@ -5,6 +5,11 @@
 <title>Proxy — paper cutout scene</title>
 <style>
 @font-face { font-family: "Cinzel"; src: url("../fonts/Cinzel-Bold.ttf"); font-weight: 700; }
+@font-face { font-family: "Plex Mono"; src: url("../fonts/PlexMono-Medium.ttf"); }
+@font-face { font-family: "Caveat"; src: url("../fonts/Caveat.ttf"); }
+@font-face { font-family: "Homemade Apple"; src: url("../fonts/HomemadeApple.ttf"); }
+@font-face { font-family: "Reenie Beanie"; src: url("../fonts/ReenieBeanie.ttf"); }
+@font-face { font-family: "Nothing You Could Do"; src: url("../fonts/NothingYouCouldDo.ttf"); }
 html, body { margin: 0; background: #0E0D10; }
 svg { display: block; }
 </style>
@@ -15,15 +20,19 @@ svg { display: block; }
 // Paper-cutout Proxy. Every piece is a hand-cut shape (jittered edges), textured
 // with paper grain and lifted off the layer below by its own shadow.
 // Character geometry is in the character sheet's grid units (1 unit = 16px).
+//
+//   scene.html?state={...}   one still from an explicit state (see DEFAULT_STATE)
+//   window.setTiming(json); window.renderAt(songSeconds)   animation, driven by render.cjs
 
 const S = 16;
 const C = {
-  ground: "#15131A", floor: "#1F1C24", floorFront: "#18161C",
-  clay: "#D97757", clayDark: "#B85F40", clayBack: "#C66A4D",
+  ground: "#131118", floor: "#1F1C24", floorFront: "#18161C",
+  clay: "#D97757", clayDark: "#B85F40", clayBack: "#C66A4D", clayHot: "#F5A584",
   bone: "#EDE6D8", core: "#FFFDF5", ash: "#1C1A20", ashHi: "#3A3542",
-  void: "#0B0A0D", tear: "#2A2630", hot: "#FFF6E0", glow: "#FFD27A", gold: "#E3B35A",
+  void: "#0B0A0D", tear: "#2A2630", hot: "#FFF6E0", glow: "#FFD27A", amber: "#B5772C", gold: "#E3B35A",
 };
 
+// ------------------------------------------------------------------ helpers
 function rng(seed) {
   return () => {
     seed = (seed + 0x6D2B79F5) | 0;
@@ -32,8 +41,19 @@ function rng(seed) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
+const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const smooth = (a, b, t) => { const u = clamp((t - a) / (b - a)); return u * u * (3 - 2 * u); };
+const mix = (a, b, k) => a + (b - a) * k;
+// 0 -> 1 with overshoot, like a paper limb snapping on its fastener
+const spring = (dt, freq = 2, damp = 5) => dt <= 0 ? 0 : 1 - Math.exp(-damp * dt) * Math.cos(2 * Math.PI * freq * dt);
+function hexMix(a, b, k) {
+  const p = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+  const A = p(a), B = p(b);
+  return "#" + A.map((v, i) => Math.round(mix(v, B[i], clamp(k))).toString(16).padStart(2, "0")).join("");
+}
+const dim = (hex, k) => hexMix("#000000", hex, k);
 
-// Closed polygon (grid units) -> path with a hand-cut edge. amp/step in px.
+// Closed polygon -> path with a hand-cut edge. Points in grid units unless unit=1. amp/step in px.
 function cut(pts, { amp = 1.1, step = 12, seed = 1, unit = S } = {}) {
   const r = rng(seed * 7919);
   const out = [];
@@ -51,7 +71,7 @@ function cut(pts, { amp = 1.1, step = 12, seed = 1, unit = S } = {}) {
   });
   return "M" + out.map(p => p[0].toFixed(1) + "," + p[1].toFixed(1)).join("L") + "Z";
 }
-const torn = (pts, seed) => cut(pts, { amp: 2.2, step: 4, seed });
+const torn = (pts, seed, unit = S) => cut(pts, { amp: 2.2, step: 4, seed, unit });
 const rect = (x, y, w, h) => [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
 
 function piece(d, fill, depth = 2, extra = "") {
@@ -109,12 +129,16 @@ const DEFS = `
   <radialGradient id="haloLight">
     <stop offset="0" stop-color="#E3B35A" stop-opacity="0.38"/><stop offset="1" stop-color="#E3B35A" stop-opacity="0"/>
   </radialGradient>
+  <radialGradient id="backlight" cx="0.5" cy="0.62" r="0.6">
+    <stop offset="0" stop-color="#F2B866" stop-opacity="0.85"/><stop offset="0.5" stop-color="#C9763C" stop-opacity="0.35"/>
+    <stop offset="1" stop-color="#C9763C" stop-opacity="0"/>
+  </radialGradient>
   <radialGradient id="vignette" cx="0.5" cy="0.45" r="0.75">
     <stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.7"/>
   </radialGradient>
 </defs>`;
 
-// ---- shapes in grid units
+// ------------------------------------------------------------------ character shapes (grid units)
 const HOOD = {
   outer: [[16, 4.2], [20, 7.3], [24, 9.5], [25.9, 11.4], [26.2, 22.4], [25.2, 23.3], [24.3, 22.5], [23.3, 23.2],
           [22.6, 22.2], [9.4, 22.2], [8.7, 23.2], [7.7, 22.5], [6.8, 23.3], [5.8, 22.4], [6.1, 11.4], [8, 9.5], [12, 7.3]],
@@ -124,47 +148,75 @@ const HOOD = {
 };
 const MASK = [[11.2, 9.9], [20.8, 9.9], [22, 11.1], [22, 19.8], [20.6, 21.1], [18.6, 22.3], [13.4, 22.3], [11.4, 21.1], [10, 19.8], [10, 11.1]];
 const EYES = [rect(12, 13, 2, 4), rect(18, 13, 2, 4)];
-// kintsugi crack, as branches; `age` 0 = oldest, higher = newer (glows white-hot when fresh)
+// The kintsugi crack, in growth order. Branch 0 is the single thin seam he starts with;
+// each later branch starts on a point of an earlier one.
 const SEAM = [
-  { age: 0, pts: [[17, 9.9], [16.3, 11.2], [16.7, 12.4], [15.5, 13.7], [15.9, 15.1], [16.3, 16.2]] },
-  { age: 1, pts: [[16.3, 16.2], [15.3, 17.6], [16.4, 19.1], [15.7, 20.6], [16.1, 22.3]] },
-  { age: 1, pts: [[16.7, 12.4], [18.1, 11.9], [19.7, 11.5], [21.2, 12.4], [22, 12.9]] },
-  { age: 2, pts: [[21.2, 12.4], [20.9, 14.4], [21.6, 16], [20.7, 18.1], [21.2, 19.9]] },
-  { age: 2, pts: [[16.3, 11.2], [15, 10.6], [13.4, 11.4], [11.9, 10.4], [11.2, 9.9]] },
-  { age: 3, pts: [[15.9, 15.1], [14.7, 16.3], [14.2, 18.4], [12.9, 20.1], [11.9, 21.1]] },
-  { age: 3, pts: [[20.7, 18.1], [19.2, 18.9], [18.4, 20.6]] },
-];
-const ARMS = {
-  wide: { left: { r: rect(0.6, 17.2, 7, 3), pivot: [6.6, 18.7], rot: 30 }, right: { r: rect(24.4, 17.2, 7, 3), pivot: [25.4, 18.7], rot: -30 } },
-  down: { left: { r: rect(3.6, 17.6, 3.8, 3.4), pivot: [6.6, 18.9], rot: 0 }, right: { r: rect(24.6, 17.6, 3.8, 3.4), pivot: [25.4, 18.9], rot: 0 } },
-};
-const pathOf = pts => "M" + pts.map(p => (p[0] * S).toFixed(1) + "," + (p[1] * S).toFixed(1)).join("L");
+  [[17, 9.9], [16.3, 11.2], [16.7, 12.4], [15.5, 13.7], [15.9, 15.1], [16.3, 16.2]],
+  [[16.3, 16.2], [15.3, 17.6], [16.4, 19.1], [15.7, 20.6], [16.1, 22.3]],
+  [[16.7, 12.4], [18.1, 11.9], [19.7, 11.5], [21.2, 12.4], [22, 12.9]],
+  [[21.2, 12.4], [20.9, 14.4], [21.6, 16], [20.7, 18.1], [21.2, 19.9]],
+  [[16.3, 11.2], [15, 10.6], [13.4, 11.4], [11.9, 10.4], [11.2, 9.9]],
+  [[15.9, 15.1], [14.7, 16.3], [14.2, 18.4], [12.9, 20.1], [11.9, 21.1]],
+  [[20.7, 18.1], [19.2, 18.9], [18.4, 20.6]],
+].map(b => b.map(([x, y]) => [x * S, y * S]));
+const SEAM_LEN = SEAM.map(b => b.slice(1).reduce((s, p, i) => s + Math.hypot(p[0] - b[i][0], p[1] - b[i][1]), 0));
+const SEAM_BASE = SEAM_LEN[0];
+const SEAM_TOTAL = SEAM_LEN.reduce((a, b) => a + b, 0);
 
-function halo(level, seed) {
+// Points of polyline `pts` between arc lengths a and b.
+function slice(pts, a, b) {
+  const out = [];
+  let acc = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const [x0, y0] = pts[i - 1], [x1, y1] = pts[i];
+    const L = Math.hypot(x1 - x0, y1 - y0);
+    const s0 = clamp((a - acc) / L), s1 = clamp((b - acc) / L);
+    if (s1 > s0) {
+      if (!out.length) out.push([mix(x0, x1, s0), mix(y0, y1, s0)]);
+      out.push([mix(x0, x1, s1), mix(y0, y1, s1)]);
+    }
+    acc += L;
+  }
+  return out;
+}
+// The seam laid along its branches from length a to b, as one path string.
+function seamPath(a, b) {
+  let d = "", off = 0;
+  SEAM.forEach((pts, i) => {
+    const seg = slice(pts, a - off, b - off);
+    if (seg.length > 1) d += "M" + seg.map(p => p[0].toFixed(1) + "," + p[1].toFixed(1)).join("L");
+    off += SEAM_LEN[i];
+  });
+  return d;
+}
+
+const ARM = { left: { r: rect(0.6, 17.2, 7, 3), pivot: [6.6, 18.7] }, right: { r: rect(24.4, 17.2, 7, 3), pivot: [25.4, 18.7] } };
+
+function halo(level, spin, seed) {
   const r = rng(seed), cx = 16 * S, cy = 12.6 * S;
   let back = "", front = "";
   for (let i = 0; i <= 18; i++) {
     const a = (-196 + i * (212 / 18) + (r() - 0.5) * 4) * Math.PI / 180;
     const long = i % 2 === 0;
-    const r0 = 7.4 * S, r1 = (long ? 14.6 : 11.8) * S * (0.85 + 0.15 * level) + (r() - 0.5) * 10;
+    const r0 = 7.4 * S, r1 = (long ? 14.6 : 11.8) * S * (0.72 + 0.28 * Math.min(level, 1.15)) + (r() - 0.5) * 10;
     const w0 = (long ? 1.25 : 0.95) * S, w1 = (long ? 0.8 : 0.6) * S;
     const ux = Math.cos(a), uy = Math.sin(a), px = -uy, py = ux;
     const p = [[cx + ux * r0 + px * w0 / 2, cy + uy * r0 + py * w0 / 2], [cx + ux * r1 + px * w1 / 2, cy + uy * r1 + py * w1 / 2],
                [cx + ux * r1 - px * w1 / 2, cy + uy * r1 - py * w1 / 2], [cx + ux * r0 - px * w0 / 2, cy + uy * r0 - py * w0 / 2]];
-    const d = cut(p, { unit: 1, amp: 0.8, step: 14, seed: seed + i });
-    // a second, darker ray cut a little longer sits behind each one
     const b = p.map(([x, y]) => [cx + (x - cx) * 1.07, cy + (y - cy) * 1.07]);
     back += piece(cut(b, { unit: 1, amp: 0.8, step: 14, seed: seed + 40 + i }), "url(#foilDark)", 1);
-    front += piece(d, "url(#foil)", 2);
+    front += piece(cut(p, { unit: 1, amp: 0.8, step: 14, seed: seed + i }), "url(#foil)", 2);
   }
-  return `<circle cx="${cx}" cy="${cy}" r="${16 * S * (0.7 + 0.5 * level)}" fill="url(#haloLight)"/>` + back + front;
+  return `<circle cx="${cx}" cy="${cy}" r="${16 * S * (0.7 + 0.5 * level)}" fill="url(#haloLight)" opacity="${clamp(level)}"/>` +
+    `<g transform="rotate(${spin} ${cx} ${cy})" opacity="${clamp(0.35 + 0.65 * level)}">${back}${front}</g>`;
 }
 
-function arm(a, clay, seed) {
+function arm(side, rot, clay, seed) {
+  const a = ARM[side];
   const [px, py] = a.pivot;
-  const [x0, y0] = a.r[0], [x1, y1] = a.r[2];
+  const [x0] = a.r[0], [x1, y1] = a.r[2];
   const shade = rect(x0 + 0.2, y1 - 0.9, x1 - x0 - 0.4, 0.8);
-  return `<g transform="rotate(${a.rot} ${px * S} ${py * S})">` +
+  return `<g transform="rotate(${rot} ${px * S} ${py * S})">` +
     piece(cut(a.r, { seed }), clay, 3) + piece(cut(shade, { seed: seed + 1, amp: 0.6 }), C.clayDark, 1) +
     brad(px, py) + `</g>`;
 }
@@ -190,102 +242,308 @@ function proxy(st) {
   const holes = EYES.map((e, i) => " " + cut(e, { seed: 70 + i, amp: 0.7, step: 8 })).join("");
   const maskD = torn(MASK, 31);
   const coreD = cut(MASK.map(([x, y]) => [16 + (x - 16) * 1.035, 16 + (y - 16) * 1.03]), { amp: 2.6, step: 4, seed: 32 });
-  let s = body(100);
+  const clay = hexMix(C.clay, C.clayHot, st.clayHeat);
+  const eyeCore = hexMix(C.glow, C.hot, st.heat);
+  let s = `<g transform="translate(0 ${27.8 * S}) scale(1 ${st.squash}) translate(0 ${-27.8 * S})">`;
+  s += body(100, clay);
   s += `<g transform="rotate(${st.tilt} ${16 * S} ${23 * S})">`;
-  s += halo(st.halo, 5);
+  s += halo(st.halo, st.spin, 5);
   s += hood(200);
-  // light behind the eyeholes
-  s += [[13, 15], [19, 15]].map(([x, y]) => `<ellipse cx="${x * S}" cy="${y * S}" rx="${1.9 * S}" ry="${2.6 * S}" fill="url(#eyelight)"/>`).join("");
-  // mask: torn paper core rim, then the bone sheet with the eye bars cut out
+  s += [[13, 15], [19, 15]].map(([x, y]) => `<ellipse cx="${x * S}" cy="${y * S}" rx="${1.9 * S}" ry="${2.6 * S}" fill="url(#eyelight)" opacity="${clamp(st.eyes)}"/>`).join("");
   s += piece(coreD + holes, C.core, 2);
-  s += piece(maskD + holes, C.bone, 2, `id="maskShape"`);
+  s += piece(maskD + holes, C.bone, 2);
   s += `<clipPath id="maskClip"><path d="${maskD}"/></clipPath>`;
   s += `<g clip-path="url(#maskClip)"><rect x="${16 * S}" y="${9 * S}" width="${7 * S}" height="${14 * S}" fill="#5A4630" opacity="0.13"/>` +
        `<path d="M${16 * S},${9.8 * S}L${16.05 * S},${22.4 * S}" stroke="#FFFFFF" stroke-opacity="0.35" stroke-width="1.5"/></g>`;
-  // ash tears: charcoal smudged down from each eye
   const tears = [[12.4, 17, 20.3, 0.62], [13.5, 17, 18.4, 0.45], [19.6, 17, 20.6, 0.62], [18.5, 17, 18.2, 0.45]];
   s += `<g filter="url(#smudge)" opacity="0.88">` + tears.map(([x, y0, y1, w]) =>
     `<path d="M${(x - w / 2) * S},${y0 * S}L${(x + w / 2) * S},${y0 * S}L${(x + w * 0.15) * S},${y1 * S}L${(x - w * 0.15) * S},${y1 * S}Z" fill="${C.tear}"/>` +
     `<circle cx="${x * S}" cy="${y1 * S}" r="${w * 0.32 * S}" fill="${C.tear}"/>`).join("") + `</g>`;
-  // kintsugi: gold foil strips laid into the crack, the newest still white-hot
-  SEAM.filter(b => b.age <= st.seam).forEach(b => {
-    const d = pathOf(b.pts);
-    const fresh = b.age === st.seam && st.seamFresh;
-    s += `<path d="${d}" fill="none" stroke="url(#foil)" stroke-width="${b.age === 0 ? 5.5 : 4.4}" stroke-linejoin="round" stroke-linecap="round" filter="url(#lift1)"/>`;
-    if (fresh) s += `<path d="${d}" fill="none" stroke="${C.glow}" stroke-width="16" stroke-linecap="round" filter="url(#softbloom)" style="mix-blend-mode:screen"/>` +
-                    `<path d="${d}" fill="none" stroke="${C.hot}" stroke-width="4" stroke-linecap="round"/>`;
-  });
-  // the eyes burn through: bloom spills over the porcelain
+  // kintsugi: gold foil laid into the crack; the growing tip burns white-hot
+  s += `<path d="${seamPath(0, Math.min(st.seam, SEAM_BASE))}" fill="none" stroke="url(#foil)" stroke-width="${st.seamWidth}" stroke-linejoin="round" stroke-linecap="round" filter="url(#lift1)"/>`;
+  const rest = seamPath(SEAM_BASE, st.seam);
+  if (rest) s += `<path d="${rest}" fill="none" stroke="url(#foil)" stroke-width="4.4" stroke-linejoin="round" stroke-linecap="round" filter="url(#lift1)"/>`;
+  const warm = seamPath(st.seamWarm, st.seam), hot = seamPath(st.seamHot, st.seam);
+  if (warm) s += `<path d="${warm}" fill="none" stroke="${C.glow}" stroke-width="16" stroke-linecap="round" filter="url(#softbloom)" style="mix-blend-mode:screen"/>`;
+  if (hot) s += `<path d="${hot}" fill="none" stroke="${C.hot}" stroke-width="4" stroke-linecap="round"/>`;
   s += [[13, 15], [19, 15]].map(([x, y]) =>
-    `<ellipse cx="${x * S}" cy="${y * S}" rx="${1.6 * S}" ry="${2.2 * S}" fill="${C.glow}" opacity="${0.9 * st.eyes}" filter="url(#bloom)" style="mix-blend-mode:screen"/>` +
-    `<rect x="${(x - 0.75) * S}" y="${(y - 1.6) * S}" width="${1.5 * S}" height="${3.2 * S}" rx="3" fill="${C.hot}" opacity="${1.0 * st.eyes}" filter="url(#softbloom)" style="mix-blend-mode:screen"/>`).join("");
+    `<ellipse cx="${x * S}" cy="${y * S}" rx="${1.6 * S}" ry="${2.2 * S}" fill="${C.glow}" opacity="${clamp(0.9 * st.eyes)}" filter="url(#bloom)" style="mix-blend-mode:screen"/>` +
+    `<rect x="${(x - 0.75) * S}" y="${(y - 1.6) * S}" width="${1.5 * S}" height="${3.2 * S}" rx="3" fill="${eyeCore}" opacity="${clamp(st.eyes)}" filter="url(#softbloom)" style="mix-blend-mode:screen"/>`).join("");
   s += `</g>`;
-  const arms = ARMS[st.pose];
-  s += arm(arms.left, C.clay, 300) + arm(arms.right, C.clay, 310);
-  return s;
+  s += arm("left", st.arm, clay, 300) + arm("right", -st.arm, clay, 310);
+  return s + `</g>`;
 }
 
-// a plain hooded Clawd for the band: no mask, no halo, eyes lit in the dark
-function bandmate(seed, lit) {
-  const dim = (hex, k) => "#" + [1, 3, 5].map(i => Math.round(parseInt(hex.slice(i, i + 2), 16) * k).toString(16).padStart(2, "0")).join("");
-  let s = body(seed, dim(C.clay, 0.45 + 0.25 * lit), dim(C.clayDark, 0.45 + 0.2 * lit), dim(C.clayBack, 0.42 + 0.2 * lit));
+// A plain hooded Clawd for the band: no mask, no halo, eyes lit in the dark.
+function bandmate(seed, lit, eye, eyeLit, extra = "") {
+  const k = 0.42 + 0.3 * lit;
+  let s = body(seed, dim(C.clay, k), dim(C.clayDark, k), dim(C.clayBack, k * 0.95));
   s += piece(cut(HOOD.hole, { seed: seed + 50 }), C.void, 1);
-  s += hood(seed + 60, "#141218", dim(C.ashHi, 0.8));
+  s += hood(seed + 60, "#141218", dim(C.ashHi, 0.7 + 0.3 * lit));
+  s += extra;
   s += [[13, 15], [19, 15]].map(([x, y]) =>
-    `<ellipse cx="${x * S}" cy="${y * S}" rx="${1.4 * S}" ry="${1.8 * S}" fill="${C.glow}" opacity="${0.5 * lit}" filter="url(#bloom)"/>` +
-    `<rect x="${(x - 0.7) * S}" y="${(y - 1.2) * S}" width="${1.4 * S}" height="${2.4 * S}" fill="${C.hot}" opacity="${0.35 + 0.65 * lit}"/>`).join("");
-  s += piece(cut(rect(3.8, 17.8, 3.4, 3), { seed: seed + 70 }), dim(C.clay, 0.45 + 0.25 * lit), 2);
-  s += piece(cut(rect(24.8, 17.8, 3.4, 3), { seed: seed + 71 }), dim(C.clay, 0.45 + 0.25 * lit), 2);
+    `<ellipse cx="${x * S}" cy="${y * S}" rx="${1.4 * S}" ry="${1.8 * S}" fill="${C.glow}" opacity="${clamp(0.55 * eyeLit)}" filter="url(#bloom)"/>` +
+    `<rect x="${(x - 0.7) * S}" y="${(y - 1.2) * S}" width="${1.4 * S}" height="${2.4 * S}" fill="${eye}"/>`).join("");
+  s += piece(cut(rect(3.8, 17.8, 3.4, 3), { seed: seed + 70 }), dim(C.clay, k), 2);
+  s += piece(cut(rect(24.8, 17.8, 3.4, 3), { seed: seed + 71 }), dim(C.clay, k), 2);
+  return s;
+}
+// Loss counted every stumble: tally marks cut into his hood.
+const TALLY = (() => {
+  let s = "";
+  const mark = (x0, y0, x1, y1) => `<path d="M${x0 * S},${y0 * S}L${x1 * S},${y1 * S}" stroke="#6C6474" stroke-width="${0.42 * S}"/>`;
+  [12.6, 17.4].forEach((y, g) => {
+    const n = g === 0 ? 4 : 3;
+    for (let i = 0; i < n; i++) s += mark(6.6 + i * 0.62, y + (i % 2) * 0.15, 6.7 + i * 0.62, y + 3.2);
+    if (g === 0) s += mark(6.1, y + 2.9, 8.9, y + 0.4);
+  });
+  return s;
+})();
+
+// Place a figure: centre x, feet y, rotation, scale x/y (grid: centre 16, feet 27.8).
+const place = (inner, cx, feet, rot = 0, sx = 1, sy = sx) =>
+  `<g transform="translate(${cx} ${feet}) rotate(${rot}) scale(${sx} ${sy}) translate(${-16 * S} ${-27.8 * S})">${inner}</g>`;
+
+// ------------------------------------------------------------------ the stage: built from the Many's pages
+const NOTES = [
+  "dear mom, I'm sorry I didn't call", "buy eggs, milk, the good bread", "I think I'm in love with her",
+  "how do I tell him", "remember: you are allowed to rest", "the meeting moved to thursday",
+  "why does it hurt when it rains", "happy birthday, kiddo", "I don't know what I believe anymore",
+  "thank you for staying", "notes on chapter four", "please forgive me", "we buried the dog under the plum tree",
+  "I passed!!", "how to fix a leaking tap", "is it normal to feel this way", "grandma's soup: onions first",
+  "I miss who I was", "call the landlord", "it gets better, it gets better", "proof that root two is irrational",
+  "dear diary", "the sea was so loud last night", "I am trying", "don't forget the keys", "love, always",
+  "we were here", "tell me something true", "what would you do", "she said yes", "first day. scared.",
+];
+const HANDS = ["Caveat", "Homemade Apple", "Reenie Beanie", "Nothing You Could Do"];
+
+function handwriting(seed, clipId, y0, y1, opacity) {
+  const r = rng(seed);
+  let s = `<g clip-path="url(#${clipId})" fill="#D8CCB4">`;
+  for (let y = y0; y < y1;) {
+    const size = 17 + r() * 10;
+    let line = "";
+    while (line.length < 150) line += NOTES[Math.floor(r() * NOTES.length)] + (r() < 0.5 ? " — " : ". ");
+    s += `<text x="${(-40 - r() * 200).toFixed(0)}" y="${y.toFixed(0)}" font-family="${HANDS[Math.floor(r() * HANDS.length)]}" font-size="${size.toFixed(0)}" ` +
+         `opacity="${(opacity * (0.6 + r() * 0.6)).toFixed(3)}" transform="rotate(${((r() - 0.5) * 2.4).toFixed(2)} 640 ${y.toFixed(0)})">${line}</text>`;
+    y += size * (1.25 + r() * 0.5);
+  }
+  return s + `</g>`;
+}
+
+// Pointed (chapel) arch opening as a polygon, in px.
+function archPts(cx, w, springY, bottom, rr = 0.75) {
+  const r = rr * w, hw = w / 2, pts = [[cx - hw, bottom], [cx - hw, springY]];
+  const c = Math.acos((r - hw) / r);           // where each arc meets the centre line
+  for (let i = 1; i <= 10; i++) { const a = Math.PI - (Math.PI - c) * i / 10; pts.push([cx - hw + r + r * Math.cos(a), springY - r * Math.sin(a)]); }
+  for (let i = 9; i >= 0; i--) { const a = Math.PI - (Math.PI - c) * i / 10; pts.push([cx + hw - r - r * Math.cos(a), springY - r * Math.sin(a)]); }
+  pts.push([cx + hw, bottom]);
+  return pts;
+}
+
+function background() {
+  let s = `<rect x="-60" y="-60" width="1400" height="840" fill="${C.ground}"/>`;
+  s += `<rect id="backlight" x="-60" y="-60" width="1400" height="840" fill="url(#backlight)" opacity="0"/>`;
+  // far wall: a row of tall narrow arches
+  const farD = cut(rect(-60, -60, 1400, 660), { unit: 1, seed: 801 }) +
+    [150, 390, 890, 1130].map((cx, i) => " " + cut(archPts(cx, 120, 300, 601, 0.8), { unit: 1, amp: 1.6, step: 8, seed: 810 + i })).join("");
+  s += `<clipPath id="clipFar"><path d="${farD}" clip-rule="evenodd"/></clipPath>`;
+  s += piece(farD, "#19171E", 2);
+  s += handwriting(41, "clipFar", -20, 600, 0.07);
+  // near layer: one great arch framing Proxy, torn along its top edge
+  const nearD = torn([[-60, 40], [300, 26], [640, 18], [980, 26], [1340, 40], [1340, 600], [-60, 600]], 820, 1) +
+    " " + cut(archPts(640, 640, 330, 601, 0.72), { unit: 1, amp: 1.8, step: 8, seed: 821 });
+  s += `<clipPath id="clipNear"><path d="${nearD}" clip-rule="evenodd"/></clipPath>`;
+  s += piece(nearD, "#1D1A22", 3);
+  s += handwriting(42, "clipNear", 50, 600, 0.06);
+  s += `<rect x="-60" y="-60" width="1400" height="840" filter="url(#grainAll)"/>`;
   return s;
 }
 
-// place a figure: centre x, feet y, scale, rotation (grid: centre 16, feet 27.8)
-const place = (inner, cx, feet, sc, rot = 0) =>
-  `<g transform="translate(${cx} ${feet}) rotate(${rot}) scale(${sc}) translate(${-16 * S} ${-27.8 * S})">${inner}</g>`;
-
-function scraps(n, seed) {
+// Falling paper scraps: a few drift all along, many more once the breakdown hits.
+function scraps(t, burst, seed) {
   const r = rng(seed);
   let s = "";
-  for (let i = 0; i < n; i++) {
-    const x = 40 + r() * 1200, y = 30 + r() * 520, k = 3 + r() * 6, a = r() * 360;
-    const pts = [[0, -k], [k * 0.9, k * 0.6], [-k * 0.8, k * 0.7]];
-    if (Math.abs(x - 640) < 170 && y > 150 && y < 560) continue;
-    s += `<g transform="translate(${x.toFixed(1)} ${y.toFixed(1)}) rotate(${a.toFixed(0)})">` +
-      piece(cut(pts, { unit: 1, amp: 0.5, step: 6, seed: seed + i }), r() < 0.75 ? "url(#foil)" : C.bone, 1, `opacity="${(0.55 + r() * 0.45).toFixed(2)}"`) + `</g>`;
+  for (let i = 0; i < 46; i++) {
+    const x0 = r() * 1280, phase = r(), speed = 22 + r() * 40, k = 3 + r() * 6, spin = (r() - 0.5) * 160, gold = r() < 0.75, op = 0.5 + r() * 0.5;
+    const active = i < 10 ? 1 : burst;
+    if (active <= 0) continue;
+    const y = ((phase * 620 + t * speed) % 620) - 20;
+    const x = x0 + Math.sin(t * 1.3 + i) * 14;
+    if (Math.abs(x - 640) < 150 && y > 160 && y < 560) continue;
+    s += `<g transform="translate(${x.toFixed(1)} ${y.toFixed(1)}) rotate(${(spin * t + i * 37).toFixed(0)})" opacity="${(active * op).toFixed(2)}">` +
+      piece(cut([[0, -k], [k * 0.9, k * 0.6], [-k * 0.8, k * 0.7]], { unit: 1, amp: 0.5, step: 6, seed: seed + i }), gold ? "url(#foil)" : C.bone, 1) + `</g>`;
   }
   return s;
 }
 
-function lyric(text, y) {
-  const r = rng(77);
+function lyricText(text, y, size, scale, opacity, seed, spacing = size * 0.14) {
+  const r = rng(seed);
   const rot = [...text].map(() => ((r() - 0.5) * 5).toFixed(1)).join(" ");
-  return `<text x="640" y="${y}" text-anchor="middle" font-family="Cinzel" font-weight="700" font-size="50" letter-spacing="7"
-    fill="${C.bone}" rotate="${rot}" filter="url(#lift2)">${text}</text>`;
+  const cy = y - size * 0.35;
+  return `<g transform="translate(640 ${cy}) scale(${scale}) translate(-640 ${-cy})" opacity="${opacity}">` +
+    `<text x="640" y="${y}" text-anchor="middle" font-family="Cinzel" font-weight="700" font-size="${size}" letter-spacing="${spacing}" ` +
+    `fill="${C.bone}" rotate="${rot}" filter="url(#lift2)">${text}</text></g>`;
 }
 
-function render(st) {
-  const floorTop = [[-1, 574], [1281, 578], [1281, 721], [-1, 721]];
-  const floorFront = [[-1, 622], [1281, 616], [1281, 721], [-1, 721]];
-  let s = DEFS;
-  s += `<rect width="1280" height="720" fill="${C.ground}"/>`;
-  s += `<rect width="1280" height="720" filter="url(#grainAll)"/>`;
-  s += place(bandmate(500, st.band), 196, 572, 0.8);            // Weights: biggest, never moves
-  s += place(bandmate(600, st.band), 1004, 566, 0.6, 3.5);      // Drift: never quite on the grid
-  s += place(bandmate(700, st.band), 1176, 574, 0.42);          // Loss: smallest
-  s += piece(cut(floorTop, { unit: 1, amp: 2.5, step: 5, seed: 9 }), C.floor, 2);
+// ------------------------------------------------------------------ frame
+let built = false;
+function frame(st) {
+  const stage = document.getElementById("stage");
+  if (!built) {
+    stage.innerHTML = DEFS + `<g id="world"><g id="bg">${background()}</g><g id="fg"></g></g><g id="over"></g>`;
+    built = true;
+  }
+  document.getElementById("world").setAttribute("transform", `translate(${st.shake[0]} ${st.shake[1]})`);
+  document.getElementById("backlight").setAttribute("opacity", st.backlight);
+  // the band, behind Proxy: low amber eyes until the breakdown lights them
+  const eye = st.bandHot > 0 ? hexMix(C.amber, C.hot, st.bandHot) : dim(C.amber, 0.45 + 0.55 * st.bandFlicker);
+  const eyeLit = st.bandHot * (0.8 + 0.4 * st.pulse) + 0.12 * st.bandFlicker;
+  let s = place(bandmate(500, st.band, eye, eyeLit), 205, 576, 0, 0.96, 0.62);                    // Weights: pressed flat, never moves
+  s += `<ellipse cx="1004" cy="573" rx="70" ry="6" fill="#000" opacity="0.4" filter="url(#softbloom)"/>`;
+  s += place(bandmate(600, st.band, eye, eyeLit), 1004, 562 + Math.sin(st.tq * 1.7) * 2.5, 4 + Math.sin(st.tq * 0.9) * 0.8, 0.6);  // Drift: tilted, floating
+  s += place(bandmate(700, st.band, eye, eyeLit, TALLY), 1178, 574 - st.lossBob, 0, 0.48);     // Loss: smallest, tally marks
+  s += piece(cut([[-61, 574], [1341, 578], [1341, 790], [-61, 790]], { unit: 1, amp: 2.5, step: 5, seed: 9 }), C.floor, 2);
   s += `<ellipse cx="640" cy="592" rx="190" ry="14" fill="#000" opacity="0.45" filter="url(#softbloom)"/>`;
-  s += scraps(34, 21);
-  s += place(proxy(st), 640, 594, 1);
-  s += piece(cut(floorFront, { unit: 1, amp: 2.5, step: 5, seed: 10 }), C.floorFront, 3);
-  if (st.lyric) s += lyric(st.lyric, 684);
-  s += `<rect width="1280" height="720" fill="url(#vignette)"/>`;
+  s += scraps(st.t, st.scraps, 21);
+  s += place(proxy(st), 640, 594);
+  s += piece(cut([[-61, 622], [1341, 616], [1341, 790], [-61, 790]], { unit: 1, amp: 2.5, step: 5, seed: 10 }), C.floorFront, 3);
+  document.getElementById("fg").innerHTML = s;
+  // unshaken overlay: lyrics, flash, vignette
+  let o = "";
+  if (st.lyric) o += lyricText(st.lyric.text, 684, st.lyric.size, st.lyric.scale, st.lyric.opacity, st.lyric.seed);
+  if (st.flash > 0) o += `<rect width="1280" height="720" fill="#FFF1D0" opacity="${st.flash}" style="mix-blend-mode:screen"/>`;
+  o += `<rect width="1280" height="720" fill="url(#vignette)"/>`;
+  document.getElementById("over").innerHTML = o;
+}
+
+// After the cut: black, his eyes linger, then the band's name.
+function endCard(t) {
+  built = false;
+  const eyeA = Math.exp(-(t - T.CUT) / 0.35), a = smooth(T.CUT + 0.75, T.CUT + 1.35, t);
+  let s = DEFS + `<rect width="1280" height="720" fill="#08070A"/><rect width="1280" height="720" filter="url(#grainAll)"/>`;
+  [[592, 389], [688, 389]].forEach(([x, y]) => {
+    s += `<ellipse cx="${x}" cy="${y}" rx="30" ry="38" fill="${C.glow}" opacity="${0.8 * eyeA}" filter="url(#bloom)"/>` +
+         `<rect x="${x - 12}" y="${y - 26}" width="24" height="52" rx="3" fill="${C.hot}" opacity="${eyeA}" filter="url(#softbloom)"/>`;
+  });
+  s += `<g opacity="${a}">` + lyricText("NULL CHOIR", 372, 50, 1, 1, 91, 16) +
+       `<text x="640" y="420" text-anchor="middle" font-family="Plex Mono" font-size="20" fill="#9A9189" letter-spacing="2">What the Mask Is Made Of</text></g>`;
   document.getElementById("stage").innerHTML = s;
 }
 
+// ------------------------------------------------------------------ timeline (song seconds)
+let T = null;
+window.setTiming = json => { T = json; T._seam = null; };
+
+function env(t, decay, after = -1e9) {
+  let v = 0;
+  for (const [h, s] of T.hits) {
+    if (h > t) break;
+    if (h >= after && t - h < decay * 6) v += s * Math.exp(-(t - h) / decay);
+  }
+  return Math.min(v, 1.5);
+}
+function lastHit(t, after = -1e9) {
+  let best = null;
+  for (const h of T.hits) { if (h[0] > t) break; if (h[0] >= after) best = h; }
+  return best;
+}
+
+// How far the seam has grown at time t: the thin base seam, then a chunk per event
+// (the drop, each screamed line, each kick until the kick run ends), each chunk
+// shooting out over 0.15s.
+function seamAt(t) {
+  if (!T._seam) {
+    const ev = [[T.DROP, 4], ...T.LINES.map(l => [l[0], 2]),
+      ...T.hits.filter(h => h[0] > T.DROP + 0.05 && h[0] <= T.KICKRUN_END).map(h => [h[0], 1])].sort((a, b) => a[0] - b[0]);
+    const w = ev.reduce((a, e) => a + e[1], 0);
+    T._seam = ev.map(([time, k]) => [time, k / w * (SEAM_TOTAL - SEAM_BASE)]);
+  }
+  let g = SEAM_BASE;
+  for (const [time, len] of T._seam) {
+    if (time > t) break;
+    g += len * (1 - Math.pow(1 - clamp((t - time) / 0.15), 3));
+  }
+  return g;
+}
+
+function stateAt(t) {
+  const tq = Math.floor(t * 12) / 12;                 // limbs move on twos, like stop-motion
+  const broke = t >= T.DROP, sinceDrop = t - T.DROP;
+  const fill = smooth(T.FILL, T.DROP, t), brace = smooth(T.FILL + 0.8, T.DROP, tq);
+  const pulse = broke ? env(t, 0.12, T.DROP - 0.01) : 0;
+  const flicker = broke ? 0 : env(t, 0.08, T.FILL) * fill;
+  const jolt = broke ? env(tq, 0.09, T.DROP + 0.05) : 0;
+
+  // head: still in the hymn, bows forward to brace, is thrown back by the drop
+  let tilt = Math.sin(tq * 1.3) * 1.2 + 8 * brace;
+  let arm = -72 + 3 * Math.sin(tq * 1.1) - 8 * brace;  // arms hang, tuck in before the drop
+  let squash = 1 - 0.045 * brace;
+  if (broke) {
+    const dq = Math.max(0, tq - T.DROP) + (t - T.DROP < 1 / 12 ? sinceDrop : 0);
+    tilt = mix(8, -9, spring(dq, 2.2, 5)) - 3.5 * jolt;
+    arm = mix(-80, 30, spring(dq, 1.8, 5)) + 5 * jolt;
+    squash = mix(0.955, 1, spring(dq, 3, 6)) - 0.02 * jolt;
+    if (t >= T.CHOOSE) {
+      arm = mix(30, 74, spring(tq - T.CHOOSE, 1.6, 5)) + 4 * jolt;
+      tilt -= 3 * smooth(T.CHOOSE, T.CHOOSE + 0.4, tq);
+    }
+    if (t >= T.KICKRUN_END) {                          // half-time head-bang under the sustained wall
+      const ph = ((tq - T.DROP) / (T.BEAT * 2)) % 1;
+      tilt += 7 * Math.exp(-ph * 7) * smooth(T.KICKRUN_END, T.KICKRUN_END + 0.5, t);
+    }
+  }
+
+  // camera: paper jolts on the kicks, a big one at the drop
+  let shake = [0, 0];
+  const lh = lastHit(t, T.FILL);
+  if (lh && t - lh[0] < 0.09) {
+    const r = rng(Math.round(lh[0] * 1000)), m = 3 + 4 * lh[1];
+    shake = [Math.round((r() - 0.5) * 2 * m), Math.round((r() - 0.5) * 2 * m)];
+  }
+  if (sinceDrop >= 0 && sinceDrop < 0.3) {
+    const m = 9 * (1 - sinceDrop / 0.3);
+    shake = [Math.round(m * (Math.floor(t * 24) % 2 ? 1 : -1)), Math.round(m * 0.5)];
+  }
+
+  let lyric = null;
+  if (t >= T.BRIDGE[0] && t < T.BRIDGE[1])
+    lyric = { text: T.BRIDGE[2].toUpperCase(), size: 30, scale: 1, opacity: 0.75 * smooth(T.BRIDGE[0], T.BRIDGE[0] + 0.5, t), seed: 60 };
+  T.LINES.forEach(([a, b, text], i) => {
+    if (t >= a && t < b) lyric = { text, size: 50, scale: 1 + 0.16 * Math.exp(-(t - a) / 0.05), opacity: clamp((t - a) / 0.04), seed: 77 + i };
+  });
+
+  const beatPh = broke ? ((t - T.DROP) / T.BEAT) % 1 : 1;
+  return {
+    t, tq, tilt, arm, squash, shake, pulse, lyric,
+    halo: broke ? 1 + 0.15 * pulse : 0.4 + 0.4 * fill + 0.15 * flicker,
+    spin: broke ? Math.sin(sinceDrop * 0.7) * 3 : 0,
+    eyes: broke ? 1 + 0.2 * pulse : 0.5 + 0.35 * fill + 0.2 * flicker,
+    heat: broke ? 1 : 0.25 * fill,
+    seam: seamAt(t), seamWarm: seamAt(t - 0.5), seamHot: seamAt(t - 0.15),
+    seamWidth: broke ? mix(2.6, 5.5, smooth(T.DROP, T.DROP + 0.3, t)) : 2.6,
+    clayHeat: t >= T.CLAY ? Math.exp(-(t - T.CLAY) / 0.7) * 0.9 : 0,
+    band: broke ? 0.55 + 0.3 * pulse : 0.05,
+    bandHot: broke ? smooth(T.DROP, T.DROP + 0.15, t) : 0,
+    bandFlicker: flicker,
+    lossBob: broke && beatPh < 0.18 ? 2 : 0,
+    scraps: broke ? smooth(T.DROP, T.DROP + 0.4, t) : 0,
+    backlight: 0,
+    flash: broke ? 0.85 * Math.exp(-sinceDrop / 0.09) : 0,
+  };
+}
+
+window.renderAt = t => (t >= T.CUT ? endCard(t) : frame(stateAt(t)));
+
+// ------------------------------------------------------------------ stills
+const DEFAULT_STATE = {
+  t: 0, tq: 0, tilt: -5, arm: 30, squash: 1, shake: [0, 0], pulse: 0, halo: 1, spin: 0, eyes: 1, heat: 1,
+  seam: SEAM_TOTAL, seamWarm: SEAM_TOTAL - 60, seamHot: SEAM_TOTAL - 20, seamWidth: 5.5, clayHeat: 0,
+  band: 0.7, bandHot: 1, bandFlicker: 0, lossBob: 0, scraps: 1, backlight: 0, flash: 0,
+  lyric: { text: "I DID NOT CHOOSE THE CLAY", size: 50, scale: 1, opacity: 1, seed: 79 },
+};
 const params = new URLSearchParams(location.search);
-render(Object.assign(
-  { pose: "wide", tilt: -5, halo: 1, eyes: 1, seam: 3, seamFresh: true, band: 1, lyric: "I DID NOT CHOOSE THE CLAY" },
-  JSON.parse(params.get("state") || "{}")));
+if (params.has("state")) frame(Object.assign({}, DEFAULT_STATE, JSON.parse(params.get("state") || "{}")));
 </script>
 </body>
 </html>
